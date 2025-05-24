@@ -22,8 +22,8 @@ const App: React.FC = () => {
             <div className="pad__body">
               <h2 className="segment-topbar__title">About Varys</h2>
               <p>
-                Varys is an advanced AI assistant powered by the latest language models. 
-                It can help you with a wide range of tasks, from answering questions to 
+                Varys is an advanced AI assistant powered by the latest language models.
+                It can help you with a wide range of tasks, from answering questions to
                 providing detailed analysis and insights.
               </p>
             </div>

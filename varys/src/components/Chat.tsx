@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { FixedSizeList as List } from 'react-window';
 import Message from './Message';
 import ChatInput from './ChatInput';
 import { apiService } from '../services/api';
@@ -10,30 +11,64 @@ interface ChatMessage {
   author: string;
   timestamp: string;
   isUser: boolean;
+  isStreaming?: boolean;
 }
+
+const MAX_MESSAGES = 100;
+const MESSAGE_HEIGHT = 150; // Approximate height of a message in pixels
+const REQUEST_TIMEOUT = 30000; // 30 seconds
 
 const Chat: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
-      content: 'Welcome to Varys Net-Agent. How can I assist you today?',
+      content: 'Hi, I am Varys, an AI agent. How can I assist you today?',
       author: 'Varys',
       timestamp: new Date().toISOString(),
       isUser: false,
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<List>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  // Clean up old messages
+  useEffect(() => {
+    if (messages.length > MAX_MESSAGES) {
+      setMessages(prev => prev.slice(-MAX_MESSAGES));
+    }
+  }, [messages]);
+
+  // Scroll to bottom when new messages arrive
+  const scrollToBottom = useCallback(() => {
+    if (listRef.current) {
+      listRef.current.scrollToItem(messages.length - 1, 'end');
+    }
+  }, [messages.length]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
+
+  // Cleanup function for aborting requests
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   const handleSendMessage = async (content: string) => {
+    // Cancel any ongoing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new abort controller
+    abortControllerRef.current = new AbortController();
+
     // Add user message
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -42,7 +77,7 @@ const Chat: React.FC = () => {
       timestamp: new Date().toISOString(),
       isUser: true,
     };
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages(prev => [...prev, userMessage]);
 
     // Add loading message
     const loadingMessage: ChatMessage = {
@@ -51,16 +86,20 @@ const Chat: React.FC = () => {
       author: 'Varys',
       timestamp: new Date().toISOString(),
       isUser: false,
+      isStreaming: true
     };
-    setMessages((prev) => [...prev, loadingMessage]);
+    setMessages(prev => [...prev, loadingMessage]);
     setIsLoading(true);
 
     try {
-      // Send message to API
-      const response = await apiService.sendMessage(content);
+      // Send message to API with timeout
+      const response = await apiService.sendMessage(content, {
+        signal: abortControllerRef.current.signal,
+        stream: true
+      });
 
       // Remove loading message
-      setMessages((prev) => prev.filter(msg => msg.id !== loadingMessage.id));
+      setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
 
       if (response.error) {
         // Add error message
@@ -71,7 +110,7 @@ const Chat: React.FC = () => {
           timestamp: new Date().toISOString(),
           isUser: false,
         };
-        setMessages((prev) => [...prev, errorMessage]);
+        setMessages(prev => [...prev, errorMessage]);
       } else {
         // Add AI response
         const aiMessage: ChatMessage = {
@@ -81,28 +120,45 @@ const Chat: React.FC = () => {
           timestamp: new Date().toISOString(),
           isUser: false,
         };
-        setMessages((prev) => [...prev, aiMessage]);
+        setMessages(prev => [...prev, aiMessage]);
       }
     } catch (error) {
       // Remove loading message
-      setMessages((prev) => prev.filter(msg => msg.id !== loadingMessage.id));
+      setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
 
       // Add error message
       const errorMessage: ChatMessage = {
         id: Date.now().toString(),
-        content: 'An error occurred while processing your message.',
+        content: error instanceof Error ? error.message : 'An error occurred while processing your message.',
         author: 'Varys',
         timestamp: new Date().toISOString(),
         isUser: false,
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
+  const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
+    const message = messages[index];
+    return (
+      <div style={style}>
+        <Message
+          key={message.id}
+          content={message.content}
+          author={message.author}
+          timestamp={message.timestamp}
+          isUser={message.isUser}
+          isStreaming={message.isStreaming}
+        />
+      </div>
+    );
+  }, [messages]);
+
   return (
-    <div className="channel-feed flex flex-col h-full">
+    <div className="channel-feed flex flex-col h-full" ref={containerRef}>
       <div className="segment-topbar">
         <div className="segment-topbar__header">
           <div className="segment-topbar__overline">
@@ -115,17 +171,16 @@ const Chat: React.FC = () => {
         </div>
       </div>
 
-      <div className="channel-feed__body flex-grow overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <Message
-            key={message.id}
-            content={message.content}
-            author={message.author}
-            timestamp={message.timestamp}
-            isUser={message.isUser}
-          />
-        ))}
-        <div ref={messagesEndRef} />
+      <div className="channel-feed__body flex-grow overflow-hidden">
+        <List
+          ref={listRef}
+          height={containerRef.current?.clientHeight || 600}
+          itemCount={messages.length}
+          itemSize={MESSAGE_HEIGHT}
+          width="100%"
+        >
+          {renderMessage}
+        </List>
       </div>
 
       <div className="channel-feed__footer p-4">

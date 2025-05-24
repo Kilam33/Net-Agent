@@ -12,11 +12,16 @@ from dotenv import load_dotenv
 import chromadb
 from chromadb.utils import embedding_functions
 import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_template
+import json
+import time
 from flask_cors import CORS
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG,  # Change to DEBUG level
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -43,42 +48,80 @@ class OpenRouterLLM:
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:8000",  # Your site URL for proper attribution
-            "X-Title": "AI Agent Example"  # Your app name for proper attribution
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "AI Agent Example"
         }
     
-    def generate(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 1000) -> str:
+    def generate(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 1000, stream: bool = False):
         """Generate a response using the LLM.
         
         Args:
             messages: List of message objects with role and content
             temperature: Controls randomness (0 to 1)
             max_tokens: Maximum number of tokens to generate
+            stream: Whether to stream the response
             
         Returns:
-            The LLM response text
+            The LLM response text (string) or generator (if streaming)
         """
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens
+            "max_tokens": max_tokens,
+            "stream": stream
         }
         
         try:
             response = requests.post(
                 self.api_url,
                 headers=self.headers,
-                json=payload
+                json=payload,
+                stream=stream
             )
             response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
+            
+            if stream:
+                return self._handle_streaming_response(response)
+            else:
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+                
         except requests.exceptions.RequestException as e:
             logger.error(f"Error calling OpenRouter API: {e}")
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Response: {e.response.text}")
-            return f"Error generating response: {str(e)}"
+            if stream:
+                def error_generator():
+                    yield f"Error generating response: {str(e)}"
+                return error_generator()
+            else:
+                return f"Error generating response: {str(e)}"
+    
+    def _handle_streaming_response(self, response):
+        """Handle streaming response from OpenRouter API."""
+        def generate_chunks():
+            try:
+                for line in response.iter_lines():
+                    if line:
+                        decoded_line = line.decode('utf-8')
+                        if decoded_line.startswith('data: '):
+                            data = decoded_line[6:]  # Remove 'data: ' prefix
+                            if data.strip() == '[DONE]':
+                                break
+                            try:
+                                chunk_data = json.loads(data)
+                                if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                                    delta = chunk_data['choices'][0].get('delta', {})
+                                    if 'content' in delta:
+                                        yield delta['content']
+                            except json.JSONDecodeError:
+                                continue
+            except Exception as e:
+                logger.error(f"Error in streaming response: {e}")
+                yield f" [Error: {str(e)}]"
+        
+        return generate_chunks()
 
 
 class Tool:
@@ -201,7 +244,13 @@ class Agent:
             self.system_prompt = """You are a helpful AI assistant with access to various tools.
 When you need to use a tool, respond with JSON in the format:
 {"tool": "tool_name", "parameters": {"param1": "value1", ...}}
-
+When providing responses, use these formatting conventions:
+- Use # ## ### for headers to organize information
+- Wrap code in ```language blocks with proper language specification  
+- Use **Important:** **Warning:** **Tip:** for callouts
+- Use **bold** and *italic* for emphasis
+- Structure lists with - or 1. 2. 3.
+- Break long responses into logical sections
 Otherwise, respond directly to the user's query in a helpful and conversational manner.
 Based on the conversation history and any retrieved context, provide accurate and helpful responses.
 If you don't know something, say so instead of making up information.
@@ -375,6 +424,77 @@ If you don't know something, say so instead of making up information.
             # No tool call, just add response to history and return
             self.conversation_history.append({"role": "assistant", "content": response})
             return response
+        
+    def process_message_stream(self, user_message: str):
+        """Process a user message and generate a streaming response.
+        
+        Args:
+            user_message: The message from the user
+            
+        Yields:
+            Chunks of the agent's response
+        """
+        # Add user message to conversation history
+        self.conversation_history.append({"role": "user", "content": user_message})
+        
+        # Construct messages for the LLM
+        messages = [{"role": "system", "content": self.system_prompt + "\n\nAvailable Tools:\n" + self.get_tools_description()}]
+        messages.extend(self.conversation_history)
+        
+        # Get streaming response from LLM
+        response_generator = self.llm.generate(messages, stream=True)
+        
+        full_response = ""
+        for chunk in response_generator:
+            if chunk:
+                full_response += chunk
+                yield chunk
+        
+        # Check if the complete response contains a tool call
+        tool_call = self._extract_tool_call(full_response)
+        
+        if tool_call:
+            tool_name = tool_call["tool"]
+            parameters = tool_call.get("parameters", {})
+            
+            logger.info(f"Tool call detected: {tool_name} with parameters {parameters}")
+            
+            try:
+                # Execute the tool
+                tool_result = self.tools[tool_name](**parameters)
+                
+                # Add tool call and result to conversation history
+                self.conversation_history.append({"role": "assistant", "content": full_response})
+                self.conversation_history.append({"role": "system", "content": f"Tool result: {tool_result}"})
+                
+                # Stream a message about tool usage
+                tool_message = f"\n\n[Used {tool_name} tool]\n\n"
+                for char in tool_message:
+                    yield char
+                    time.sleep(0.01)  # Small delay for visual effect
+                
+                # Get final streaming response that incorporates tool result
+                messages = [{"role": "system", "content": self.system_prompt + "\n\nAvailable Tools:\n" + self.get_tools_description()}]
+                messages.extend(self.conversation_history)
+                
+                final_response_generator = self.llm.generate(messages, stream=True)
+                final_response = ""
+                
+                for chunk in final_response_generator:
+                    if chunk:
+                        final_response += chunk
+                        yield chunk
+                
+                self.conversation_history.append({"role": "assistant", "content": final_response})
+                
+            except Exception as e:
+                error_message = f"\n\n[Error executing tool {tool_name}: {str(e)}]"
+                for char in error_message:
+                    yield char
+                    time.sleep(0.01)
+        else:
+            # No tool call, just add response to history
+            self.conversation_history.append({"role": "assistant", "content": full_response})
 
 # Initialize the LLM and agent
 api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -397,23 +517,71 @@ agent.rag.add_documents([
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Handle chat messages from the frontend."""
+    """Handle chat messages from the frontend with optional streaming."""
     try:
         data = request.json
         if not data or 'message' not in data:
             return jsonify({'error': 'No message provided'}), 400
         
         message = data['message']
-        logger.info(f"Received message: {message}")
+        should_stream = data.get('stream', False)
+        logger.info(f"Received message: {message}, streaming: {should_stream}")
         
-        # Process the message using the agent
-        response = agent.process_message(message)
-        logger.info(f"Agent response: {response}")
-        
-        return jsonify({'response': response})
+        if should_stream:
+            def generate_stream():
+                try:
+                    response_chunks = []  # Collect chunks for potential tool processing
+                    
+                    for chunk in agent.process_message_stream(message):
+                        if chunk:  # Only send non-empty chunks
+                            response_chunks.append(chunk)
+                            chunk_data = {'content': chunk}
+                            sse_data = f"data: {json.dumps(chunk_data)}\n\n"
+                            logger.debug(f"Sending SSE chunk: {repr(chunk)}")
+                            yield sse_data
+                    
+                    # Send completion signal
+                    logger.debug("Sending [DONE] signal")
+                    yield "data: [DONE]\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"Error in streaming: {e}")
+                    error_data = {'error': str(e)}
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    yield "data: [DONE]\n\n"  # Always send done signal
+                finally:
+                    # Ensure proper cleanup
+                    logger.debug("Streaming completed")
+            
+            return Response(
+                generate_stream(),
+                content_type='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                    'X-Accel-Buffering': 'no'  # Disable proxy buffering
+                }
+            )
+        else:
+            # Non-streaming response (existing behavior)
+            response = agent.process_message(message)
+            logger.info(f"Agent response: {response}")
+            return jsonify({'response': response})
+            
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/capabilities', methods=['GET'])
+def capabilities():
+    """Return API capabilities including streaming support."""
+    return jsonify({
+        'streaming': True,
+        'tools': list(agent.tools.keys()),
+        'model': agent.llm.model
+    })
 
 if __name__ == "__main__":
     app.run(port=8000, debug=True)
