@@ -1,48 +1,40 @@
 import React from 'react';
-import { FaHome, FaComments, FaShoppingCart, FaMap, FaFolder } from 'react-icons/fa';
+import { Terminal } from 'lucide-react';
 
-interface NavItem {
-  text: string;
-  icon: React.ReactNode;
-  isActive?: boolean;
-  notificationCount?: number;
-}
-
-const Navbar: React.FC = () => {
-  const navItems: NavItem[] = [
-    { text: 'Home', icon: <FaHome />, notificationCount: 0 },
-    { text: 'Dashboard', icon: <FaComments />, isActive: true, notificationCount: 11 },
-    { text: 'Shop', icon: <FaShoppingCart />, notificationCount: 0 },
-    { text: 'Map', icon: <FaMap />, notificationCount: 0 },
-    { text: 'Files', icon: <FaFolder />, notificationCount: 0 },
-  ];
-
+export const Navbar: React.FC = () => {
   return (
-    <div className="flex items-center justify-between">
-      <a href="/" className="app-header__anchor">
-        <span className="app-header__anchor__text">Varys</span>
-      </a>
-      <nav>
-        <ul className="nav">
-          {navItems.map((item, index) => (
-            <li key={index} className="nav__item">
-              <a
-                href="#"
-                className={`nav__link ${item.isActive ? 'nav__link--active' : ''}`}
-              >
-                <span className="nav__link__element">{item.text}</span>
-                {(item.notificationCount ?? 0) > 0 && (
-                  <span className="nav__link__element">
-                    <span className="badge">{item.notificationCount}</span>
-                  </span>
-                )}
+    <header className="app-header px-4 py-2">
+      <div className="flex items-center justify-between">
+        <div className="app-header__anchor flex items-center">
+          <Terminal className="mr-2 text-primary-500" />
+          <span className="app-header__anchor__text">Night-City NetWire</span>
+        </div>
+        
+        <nav>
+          <ul className="nav flex space-x-12">
+            <li className="nav__item">
+              <a href="#" className="nav__link flex items-center">
+                <span className="nav__link__element">Home</span>
               </a>
             </li>
-          ))}
-        </ul>
-      </nav>
-    </div>
+            <li className="nav__item">
+              <a href="#" className="nav__link nav__link--active flex items-center">
+                <span className="nav__link__element">Chat</span>
+              </a>
+            </li>
+            <li className="nav__item">
+              <a href="#" className="nav__link flex items-center">
+                <span className="nav__link__element">Docs</span>
+              </a>
+            </li>
+            <li className="nav__item">
+              <a href="#" className="nav__link flex items-center">
+                <span className="nav__link__element">Settings</span>
+              </a>
+            </li>
+          </ul>
+        </nav>
+      </div>
+    </header>
   );
 };
-
-export default Navbar; 
