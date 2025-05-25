@@ -43,18 +43,6 @@ export const Settings: React.FC = () => {
           <h1 className="segment-topbar__title text-heading1">Settings</h1>
         </div>
         <div className="segment-topbar__aside">
-          <button className="glowbutton3 glowbutton3--primary mr-2">
-            <span className="button__content">
-              <Save className="button__icon" />
-              Save Changes
-            </span>
-          </button>
-          <button className="glowbutton3">
-            <span className="button__content">
-              <RefreshCw className="button__icon" />
-              Reset
-            </span>
-          </button>
         </div>
       </div>
 
@@ -246,6 +234,33 @@ export const Settings: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="flex justify-end gap-4 mt-6">
+        <button className="glowbutton3 glowbutton3--size-l group">
+          <span className="button__content text-primary-500">
+            <RefreshCw className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
+            Reset
+          </span>
+          <span className="glowbutton3__glitch">
+            <span className="button__content text-primary-500">
+              <RefreshCw className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
+              Reset
+            </span>
+          </span>
+        </button>
+        <button className="glowbutton3 glowbutton3--size-l group">
+          <span className="button__content text-primary-500">
+            <Save className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
+            Save Settings
+          </span>
+          <span className="glowbutton3__glitch">
+            <span className="button__content text-primary-500">
+              <Save className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
+              Save Settings
+            </span>
+          </span>
+        </button>
       </div>
     </div>
   );
