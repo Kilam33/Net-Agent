@@ -258,7 +258,7 @@ export const Dashboard: React.FC = () => {
     <div className="channel-feed h-full flex flex-col overflow-hidden">
       <div className="segment-topbar flex-shrink-0">
         <div className="segment-topbar__header">
-          <span className="segment-topbar__overline text-primary-500 font-bold text-l">AI Assistant: Varys v2.1</span>
+          <span className="segment-topbar__overline text-primary-500 font-bold ">AI Assistant: Varys v2.1</span>
         </div>
         <div className="segment-topbar__aside">
           <div className="button-toolbar">

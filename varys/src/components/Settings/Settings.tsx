@@ -3,7 +3,7 @@ import { Save, RefreshCw, Shield, Terminal, Database, Workflow, Key } from 'luci
 
 export const Settings: React.FC = () => {
   const [settings, setSettings] = useState({
-    model: 'meta-llama/llama-3.3-70b-instruct:free',
+    model: 'deepseek/deepseek-r1:free',
     temperature: 0.7,
     maxTokens: 1000,
     streamingEnabled: true,
@@ -38,7 +38,7 @@ export const Settings: React.FC = () => {
   return (
     <div className="app-skeleton">
       <div className="segment-topbar">
-        <div className="segment-topbar__header">
+        <div className="segment-topbar__header mb-1">
           <div className="segment-topbar__overline text-overline">System Configuration</div>
           <h1 className="segment-topbar__title text-heading1">Settings</h1>
         </div>
@@ -60,7 +60,7 @@ export const Settings: React.FC = () => {
 
       <div className="grid grid-cols-2 gap-6">
         {/* Model Configuration Section */}
-        <div className="pad">
+        <div className="pad mt-5">
           <div className="pad__body">
             <h2 className="text-heading2 text-secondary-500 mb-4">Model Configuration</h2>
             
@@ -73,8 +73,8 @@ export const Settings: React.FC = () => {
                   value={settings.model}
                   onChange={(e) => handleSettingChange('model', e.target.value)}
                 >
-                  <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
-                  <option value="anthropic/claude-3-opus:free">Claude 3 Opus</option>
+                  <option value="deepseek/deepseek-r1:free">Deepseek-r1</option>
+                  <option value="mistralai/devstral-small:free">Devstral-small</option>
                   <option value="google/gemini-pro:free">Gemini Pro</option>
                 </select>
               </div>
@@ -140,7 +140,7 @@ export const Settings: React.FC = () => {
         </div>
 
         {/* Security & Tools Section */}
-        <div className="pad">
+        <div className="pad mt-5">
           <div className="pad__body">
             <h2 className="text-heading2 text-secondary-500 mb-4">Security & Tools</h2>
             
