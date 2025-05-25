@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import markdownify  # pip install markdownify
 from xml.etree import ElementTree as ET
 import tiktoken  # Add tiktoken for token counting
+from werkzeug.utils import secure_filename
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +40,16 @@ CORS(app)
 MAX_CONTEXT_WINDOW = 163840  # Maximum context window size
 SAFETY_BUFFER = 0.15  # 15% safety buffer
 DEFAULT_MAX_TOKENS = 4096  # Default max tokens for generation
+
+# Add to existing imports and configurations
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'md'}
+
+# Create uploads directory if it doesn't exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 class OpenRouterLLM:
     def __init__(self, api_key: Optional[str] = None, 
@@ -865,6 +876,88 @@ def capabilities():
         'tools': list(agent.tools.keys()),
         'model': agent.llm.model
     })
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Handle file uploads from the frontend."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+            
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+            
+        if not allowed_file(file.filename):
+            return jsonify({'error': 'File type not allowed'}), 400
+            
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+        
+        should_stream = request.form.get('stream', 'false').lower() == 'true'
+        
+        if should_stream:
+            def generate_stream():
+                try:
+                    # Read file content
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Process file content with the agent
+                    for chunk in agent.process_message_stream(f"Process this file content: {content}"):
+                        if chunk:
+                            chunk_data = {'content': chunk}
+                            sse_data = f"data: {json.dumps(chunk_data)}\n\n"
+                            yield sse_data
+                    
+                    yield "data: [DONE]\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"Error processing file: {e}")
+                    error_data = {'error': str(e)}
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    yield "data: [DONE]\n\n"
+                finally:
+                    # Clean up the uploaded file
+                    try:
+                        os.remove(filepath)
+                    except:
+                        pass
+            
+            return Response(
+                generate_stream(),
+                content_type='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                    'X-Accel-Buffering': 'no'
+                }
+            )
+        else:
+            # Read file content
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Process file content with the agent
+            response = agent.process_message(f"Process this file content: {content}")
+            
+            # Clean up the uploaded file
+            try:
+                os.remove(filepath)
+            except:
+                pass
+            
+            return jsonify({
+                'success': True,
+                'message': response
+            })
+            
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
     app.run(port=8000, debug=True)

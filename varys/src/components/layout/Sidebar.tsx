@@ -5,7 +5,7 @@ export const Sidebar: React.FC = () => {
   return (
     <aside className="app-a h-full">
       <div className="segment-topbar">
-        <div className="segment-topbar__header">
+        <div className="segment-topbar__header mb-1">
           <h3 className="segment-topbar__title text-heading3">Conversations</h3>
         </div>
         <div className="segment-topbar__aside">
@@ -17,7 +17,7 @@ export const Sidebar: React.FC = () => {
         </div>
       </div>
       
-      <form className="form-search" onSubmit={(e) => e.preventDefault()}>
+      <form className="form-search mt-5" onSubmit={(e) => e.preventDefault()}>
         <div className="form-group">
           <div className="form-control form-control--with-addon">
             <input name="query" placeholder="Search..." type="text" />

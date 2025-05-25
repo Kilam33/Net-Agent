@@ -6,6 +6,12 @@ interface ChatResponse {
   response: string;
 }
 
+interface FileUploadResponse {
+  success: boolean;
+  message: string;
+  content?: string;
+}
+
 interface Capabilities {
   streaming: boolean;
   tools: string[];
@@ -237,5 +243,114 @@ export const chatService = {
       console.error('Error fetching capabilities:', error);
       throw error;
     }
+  },
+
+  /**
+   * Upload a file to the chat API
+   */
+  uploadFile: async (file: File): Promise<FileUploadResponse> => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch(`${API_URL}/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Upload a file with streaming response
+   */
+  uploadFileStream: (
+    file: File,
+    onChunk: (chunk: string) => void,
+    onComplete: () => void,
+    onError?: (error: Error) => void
+  ) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('stream', 'true');
+
+    fetch(`${API_URL}/upload`, {
+      method: 'POST',
+      body: formData,
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      function processChunk(chunk: string) {
+        buffer += chunk;
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              onComplete();
+              return;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.content) {
+                onChunk(parsed.content);
+              } else if (parsed.error) {
+                onError?.(new Error(parsed.error));
+                return;
+              }
+            } catch (error) {
+              console.error('Error parsing stream chunk:', error);
+              onError?.(error as Error);
+            }
+          }
+        }
+      }
+
+      function readChunk() {
+        if (!reader) return;
+        
+        reader.read().then(({ done, value }) => {
+          if (done) {
+            onComplete();
+            return;
+          }
+          const chunk = decoder.decode(value);
+          processChunk(chunk);
+          readChunk();
+        }).catch(error => {
+          console.error('Error reading stream:', error);
+          onError?.(error);
+        });
+      }
+
+      readChunk();
+    }).catch(error => {
+      console.error('Streaming error:', error);
+      onError?.(error);
+    });
+    
+    return () => {
+      // Cleanup function
+    };
   }
 };

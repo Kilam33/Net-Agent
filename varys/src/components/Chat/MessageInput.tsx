@@ -1,23 +1,33 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, Upload } from 'lucide-react';
 
 interface MessageInputProps {
   onSendMessage: (content: string) => void;
+  onFileUpload?: (file: File) => void;
   isLoading: boolean;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({ 
   onSendMessage,
+  onFileUpload,
   isLoading
 }) => {
   const [message, setMessage] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (message.trim() && !isLoading) {
-      onSendMessage(message);
+    if ((message.trim() || selectedFile) && !isLoading) {
+      if (selectedFile && onFileUpload) {
+        onFileUpload(selectedFile);
+      }
+      if (message.trim()) {
+        onSendMessage(message);
+      }
       setMessage('');
+      setSelectedFile(null);
     }
   };
 
@@ -26,6 +36,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       e.preventDefault();
       handleSubmit(e);
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+
+  const handleFileClick = () => {
+    fileInputRef.current?.click();
   };
 
   // Auto-resize textarea
@@ -43,7 +64,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     >
       <div className="form-group w-full">
         <label className="form-label" htmlFor="message">Message</label>
-        <div className="form-control">
+        <div className="form-control relative">
           <textarea
             ref={textareaRef}
             id="message"
@@ -54,13 +75,33 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             placeholder="Type your message here..."
             disabled={isLoading}
             rows={1}
-            className="min-h-[67px] max-h-[200px]"
+            className="min-h-[17px] max-h-[200px] pr-12"
           />
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            className="hidden"
+            accept=".txt,.pdf,.doc,.docx,.md"
+          />
+          <button
+            type="button"
+            onClick={handleFileClick}
+            className="absolute right-2 bottom-2 p-2 text-secondary-500 hover:text-secondary-400 transition-colors"
+            disabled={isLoading}
+          >
+            <Upload size={20} />
+          </button>
         </div>
+        {selectedFile && (
+          <div className="mt-2 text-sm text-secondary-500">
+            Selected file: {selectedFile.name}
+          </div>
+        )}
       </div>
       <div className="form-footer">
         <button 
-          className={`glowbutton3 glowbutton3--size-xl ${isLoading ? 'glowbutton3--primary' : ''}`}
+          className={`glowbutton3 glowbutton3--size-l ${isLoading ? 'glowbutton3--primary' : ''}`}
           type="submit"
           disabled={isLoading}
         >
