@@ -57,7 +57,7 @@ export const Settings: React.FC = () => {
               <div className="form-control">
                 <select 
                   id="model"
-                  className="w-full bg-transparent border-0 text-primary-500"
+                  className="w-full bg-transparent border-0 text-primary-500 cyberpunk-select"
                   value={settings.model}
                   onChange={(e) => handleSettingChange('model', e.target.value)}
                 >
@@ -137,7 +137,7 @@ export const Settings: React.FC = () => {
               <div className="form-control">
                 <select 
                   id="securityLevel"
-                  className="w-full bg-transparent border-0 text-primary-500"
+                  className="w-full bg-transparent border-0 text-primary-500 cyberpunk-select"
                   value={settings.securityLevel}
                   onChange={(e) => handleSettingChange('securityLevel', e.target.value)}
                 >
