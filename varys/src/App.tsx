@@ -1,13 +1,9 @@
 import React from 'react';
-import { Layout } from './components/Layout';
-import { Dashboard } from './components/Dashboard';
+import { RouterProvider } from 'react-router-dom';
+import { router } from './routes';
 
 function App() {
-  return (
-    <Layout>
-      <Dashboard />
-    </Layout>
-  );
+  return <RouterProvider router={router} />;
 }
 
 export default App;

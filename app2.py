@@ -1,6 +1,5 @@
 import os
 import json
-import requests
 from typing import List, Dict, Any, Union, Optional
 import datetime
 import inspect
@@ -12,14 +11,19 @@ from dotenv import load_dotenv
 import chromadb
 from chromadb.utils import embedding_functions
 import numpy as np
-from flask import Flask, request, jsonify, Response, stream_template
-import json
-import time
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+from openai import OpenAI
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+import markdownify  # pip install markdownify
+from xml.etree import ElementTree as ET
+import tiktoken  # Add tiktoken for token counting
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Change to DEBUG level
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -29,30 +33,99 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
+
+# Constants for token management
+MAX_CONTEXT_WINDOW = 163840  # Maximum context window size
+SAFETY_BUFFER = 0.15  # 15% safety buffer
+DEFAULT_MAX_TOKENS = 4096  # Default max tokens for generation
 
 class OpenRouterLLM:
-    def __init__(self, api_key: Optional[str] = None, model: str = "mistralai/devstral-small:free"):
-        """Initialize OpenRouter LLM client.
+    def __init__(self, api_key: Optional[str] = None, 
+                 model: str = "deepseek/deepseek-r1:free"):
+        """Initialize OpenRouter LLM client using OpenAI library.
         
         Args:
             api_key: OpenRouter API key. If None, it will look for OPENROUTER_API_KEY env variable
-            model: mistralai/devstral-small:free
+            model: Model to use (default: deepseek/deepseek-r1:free)
         """
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not self.api_key:
             raise ValueError("OpenRouter API key not found. Set OPENROUTER_API_KEY environment variable or pass api_key.")
         
         self.model = model
-        self.api_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=self.api_key
+        )
+        
+        # Headers for OpenRouter
+        self.extra_headers = {
             "HTTP-Referer": "http://localhost:8000",
             "X-Title": "AI Agent Example"
         }
+        
+        # Initialize tokenizer
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")  # Use cl100k_base for most models
+        except Exception as e:
+            logger.warning(f"Failed to initialize tokenizer: {e}. Using fallback token counting.")
+            self.tokenizer = None
     
-    def generate(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 1000, stream: bool = False):
+    def _count_tokens(self, text: str) -> int:
+        """Count the number of tokens in a text string.
+        
+        Args:
+            text: The text to count tokens for
+            
+        Returns:
+            Number of tokens
+        """
+        if self.tokenizer:
+            return len(self.tokenizer.encode(text))
+        else:
+            # Fallback: rough estimate (4 chars ≈ 1 token)
+            return len(text) // 4
+    
+    def _count_message_tokens(self, message: Dict[str, str]) -> int:
+        """Count tokens in a message object.
+        
+        Args:
+            message: Message object with role and content
+            
+        Returns:
+            Number of tokens
+        """
+        # Count role and content
+        role_tokens = self._count_tokens(message["role"])
+        content_tokens = self._count_tokens(message["content"])
+        
+        # Add tokens for message structure (approximate)
+        return role_tokens + content_tokens + 4  # +4 for message structure
+    
+    def _calculate_max_tokens(self, messages: List[Dict[str, str]], requested_max: Optional[int] = None) -> int:
+        """Calculate the maximum number of tokens that can be generated.
+        
+        Args:
+            messages: List of message objects
+            requested_max: User-requested max tokens (optional)
+            
+        Returns:
+            Maximum number of tokens that can be generated
+        """
+        # Count input tokens
+        input_tokens = sum(self._count_message_tokens(msg) for msg in messages)
+        
+        # Calculate available tokens
+        available_tokens = MAX_CONTEXT_WINDOW - input_tokens
+        available_tokens = int(available_tokens * (1 - SAFETY_BUFFER))  # Apply safety buffer
+        
+        # Use the smaller of requested max and available tokens
+        if requested_max is not None:
+            return min(requested_max, available_tokens)
+        return min(DEFAULT_MAX_TOKENS, available_tokens)
+    
+    def generate(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 100000, stream: bool = False):
         """Generate a response using the LLM.
         
         Args:
@@ -64,33 +137,32 @@ class OpenRouterLLM:
         Returns:
             The LLM response text (string) or generator (if streaming)
         """
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": stream
-        }
-        
         try:
-            response = requests.post(
-                self.api_url,
-                headers=self.headers,
-                json=payload,
-                stream=stream
-            )
-            response.raise_for_status()
+            # Calculate safe max_tokens based on context window
+            input_tokens = sum(len(msg["content"].split()) for msg in messages)  # Rough estimate
+            available_tokens = MAX_CONTEXT_WINDOW - input_tokens
+            safe_max_tokens = min(max_tokens, int(available_tokens * 0.85))  # 15% safety buffer
+            
+            if safe_max_tokens <= 0:
+                raise ValueError("Input messages exceed maximum context window size")
+            
+            logger.debug(f"Using max_tokens: {safe_max_tokens} (requested: {max_tokens})")
             
             if stream:
-                return self._handle_streaming_response(response)
+                return self._handle_streaming_response(messages, temperature, safe_max_tokens)
             else:
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
+                completion = self.client.chat.completions.create(
+                    extra_headers=self.extra_headers,
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=safe_max_tokens,
+                    stream=False
+                )
+                return completion.choices[0].message.content
                 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"Error calling OpenRouter API: {e}")
-            if hasattr(e, 'response') and e.response:
-                logger.error(f"Response: {e.response.text}")
             if stream:
                 def error_generator():
                     yield f"Error generating response: {str(e)}"
@@ -98,25 +170,23 @@ class OpenRouterLLM:
             else:
                 return f"Error generating response: {str(e)}"
     
-    def _handle_streaming_response(self, response):
-        """Handle streaming response from OpenRouter API."""
+    def _handle_streaming_response(self, messages: List[Dict[str, str]], temperature: float, max_tokens: int):
+        """Handle streaming response from OpenRouter API using OpenAI client."""
         def generate_chunks():
             try:
-                for line in response.iter_lines():
-                    if line:
-                        decoded_line = line.decode('utf-8')
-                        if decoded_line.startswith('data: '):
-                            data = decoded_line[6:]  # Remove 'data: ' prefix
-                            if data.strip() == '[DONE]':
-                                break
-                            try:
-                                chunk_data = json.loads(data)
-                                if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
-                                    delta = chunk_data['choices'][0].get('delta', {})
-                                    if 'content' in delta:
-                                        yield delta['content']
-                            except json.JSONDecodeError:
-                                continue
+                stream = self.client.chat.completions.create(
+                    extra_headers=self.extra_headers,
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+                
+                for chunk in stream:
+                    if chunk.choices[0].delta.content is not None:
+                        yield chunk.choices[0].delta.content
+                        
             except Exception as e:
                 logger.error(f"Error in streaming response: {e}")
                 yield f" [Error: {str(e)}]"
@@ -154,6 +224,69 @@ class Tool:
     def __call__(self, *args, **kwargs) -> Any:
         """Execute the tool function with the provided arguments."""
         return self.function(*args, **kwargs)
+
+class WebCrawler:
+    def __init__(self, user_agent: str = "AI Agent Web Crawler/1.0"):
+        self.user_agent = user_agent
+        self.headers = {"User-Agent": user_agent}
+        
+    def crawl(self, urls: List[str], output_format: str = "markdown") -> List[dict]:
+        """Crawl URLs and convert content to specified format.
+        
+        Args:
+            urls: List of URLs to crawl
+            output_format: Output format (markdown or xml)
+            
+        Returns:
+            List of dictionaries with content and metadata
+        """
+        results = []
+        
+        for url in urls:
+            try:
+                # Basic URL validation
+                parsed = urlparse(url)
+                if not parsed.scheme or not parsed.netloc:
+                    raise ValueError(f"Invalid URL: {url}")
+                
+                # Fetch page content
+                response = requests.get(url, headers=self.headers, timeout=10)
+                response.raise_for_status()
+                
+                # Parse HTML
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Remove unwanted elements
+                for element in soup(['script', 'style', 'nav', 'footer']):
+                    element.decompose()
+                
+                # Convert to target format
+                if output_format.lower() == "markdown":
+                    content = markdownify.markdownify(str(soup.body), heading_style="ATX")
+                elif output_format.lower() == "xml":
+                    root = ET.Element("page")
+                    ET.SubElement(root, "url").text = url
+                    ET.SubElement(root, "title").text = soup.title.string if soup.title else ""
+                    ET.SubElement(root, "content").text = soup.get_text()
+                    content = ET.tostring(root, encoding='unicode')
+                else:
+                    raise ValueError(f"Unsupported format: {output_format}")
+                
+                results.append({
+                    "url": url,
+                    "content": content, 
+                    "title": soup.title.string if soup.title else ""
+                })
+                
+            except Exception as e:
+                logger.error(f"Error crawling {url}: {e}")
+                results.append({
+                    "url": url,
+                    "content": f"Error crawling {url}: {str(e)}",
+                    "title": ""
+                })
+                
+        return results
 
 
 class RAGSystem:
@@ -264,6 +397,47 @@ If you don't know something, say so instead of making up information.
     def _register_builtin_tools(self):
         """Register the built-in tools for the agent."""
         
+        # Initialize web crawler instance
+        web_crawler = WebCrawler()
+        
+        def crawl_website(url: str, output_format: str = "markdown", add_to_knowledge: bool = True) -> str:
+            """Crawl a website and optionally add the content to the knowledge base.
+            
+            Args:
+                url: The URL to crawl
+                output_format: Format for the content (markdown or xml)
+                add_to_knowledge: Whether to automatically add crawled content to knowledge base
+            """
+            try:
+                results = web_crawler.crawl([url], output_format=output_format)
+                
+                if not results:
+                    return f"Failed to crawl {url} - no results returned"
+                
+                result = results[0]  # Single URL, single result
+                
+                # Check if crawling was successful
+                if result['content'].startswith('Error crawling'):
+                    return result['content']
+                
+                # Optionally add to knowledge base
+                if add_to_knowledge:
+                    metadata = {
+                        "source": "web_crawl",
+                        "url": url,
+                        "title": result.get('title', ''),
+                        "format": output_format
+                    }
+                    self.rag.add_documents([result['content']], metadatas=[metadata])
+                    knowledge_msg = " (Added to knowledge base)"
+                else:
+                    knowledge_msg = ""
+                
+                return f"Successfully crawled {url}{knowledge_msg}\n\nTitle: {result.get('title', 'N/A')}\n\nContent preview: {result['content'][:500]}..."
+                
+            except Exception as e:
+                return f"Error crawling {url}: {str(e)}"
+        
         def search_knowledge(query: str, n_results: int = 3) -> str:
             """Search the knowledge base for relevant information."""
             results = self.rag.query(query, n_results=n_results)
@@ -272,7 +446,10 @@ If you don't know something, say so instead of making up information.
             
             response = "Here's what I found in the knowledge base:\n\n"
             for i, result in enumerate(results):
-                response += f"#{i+1}: {result['document']}\n\n"
+                source_info = ""
+                if result['metadata'].get('url'):
+                    source_info = f" (Source: {result['metadata']['url']})"
+                response += f"**Result {i+1}**{source_info}:\n{result['document'][:300]}...\n\n"
             return response
         
         def add_to_knowledge(text: str, source: str = "user_input") -> str:
@@ -285,7 +462,15 @@ If you don't know something, say so instead of making up information.
             now = datetime.datetime.now()
             return f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         
-        # Register the tools
+        # Register all tools
+        self.register_tool(
+            Tool(
+                name="crawl_website",
+                description="Crawl a website URL to extract its content in markdown or XML format. Automatically adds content to knowledge base unless specified otherwise.",
+                function=crawl_website
+            )
+        )
+        
         self.register_tool(
             Tool(
                 name="search_knowledge",
@@ -538,6 +723,7 @@ If you don't know something, say so instead of making up information.
         else:
             # No tool call, just add response to history
             self.conversation_history.append({"role": "assistant", "content": full_response})
+
 
 # Initialize the LLM and agent
 api_key = os.environ.get("OPENROUTER_API_KEY")

@@ -106,6 +106,81 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const handleRegenerate = async (messageId: string) => {
+    // Find the message to regenerate
+    const messageIndex = messages.findIndex(msg => msg.id === messageId);
+    if (messageIndex === -1) return;
+
+    // Find the user message that triggered this response
+    const userMessageIndex = messages.findIndex((msg, index) => 
+      index < messageIndex && msg.role === 'user'
+    );
+    if (userMessageIndex === -1) return;
+
+    const userMessage = messages[userMessageIndex];
+    
+    // Update the AI message status to thinking
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId ? { ...msg, status: 'thinking' as MessageStatus } : msg
+    ));
+    
+    setIsLoading(true);
+    
+    try {
+      if (capabilities?.streaming) {
+        // Use streaming for real-time updates
+        let responseText = '';
+        
+        // Update status to generating
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId ? { ...msg, status: 'generating' as MessageStatus } : msg
+        ));
+        
+        chatService.regenerateMessageStream(
+          messageId,
+          (chunk) => {
+            responseText += chunk;
+            setMessages(prev => prev.map(msg => 
+              msg.id === messageId ? { ...msg, content: responseText } : msg
+            ));
+          },
+          () => {
+            setMessages(prev => prev.map(msg => 
+              msg.id === messageId ? { ...msg, status: 'complete' as MessageStatus } : msg
+            ));
+            setIsLoading(false);
+          }
+        );
+      } else {
+        // Use regular request
+        const response = await chatService.regenerateMessage(messageId);
+        
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, content: response.response, status: 'complete' as MessageStatus } 
+            : msg
+        ));
+        
+        setIsLoading(false);
+      }
+    } catch (error) {
+      console.error('Error regenerating message:', error);
+      
+      // Update the AI message to show the error
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId 
+          ? { 
+              ...msg, 
+              content: 'Sorry, there was an error regenerating the response.', 
+              status: 'error' as MessageStatus 
+            } 
+          : msg
+      ));
+      
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="channel-feed h-full flex flex-col overflow-hidden">
       <div className="segment-topbar flex-shrink-0">
@@ -128,6 +203,7 @@ export const Dashboard: React.FC = () => {
         <ChatInterface 
           messages={messages}
           onSendMessage={handleSendMessage}
+          onRegenerate={handleRegenerate}
           isLoading={isLoading}
         />
       </div>

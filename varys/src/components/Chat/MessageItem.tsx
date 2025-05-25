@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Message } from '../../types';
 import { formatRelativeTime } from '../../utils/dateUtils';
-import { Copy, CheckCircle } from 'lucide-react';
+import { Copy, CheckCircle, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -14,6 +14,7 @@ import 'katex/dist/katex.min.css';
 
 interface MessageItemProps {
   message: Message;
+  onRegenerate?: () => void;
 }
 
 interface CodeComponentProps {
@@ -23,8 +24,22 @@ interface CodeComponentProps {
   children: React.ReactNode;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
+export const MessageItem: React.FC<MessageItemProps> = ({ message, onRegenerate }) => {
   const [copied, setCopied] = useState(false);
+  const [formattedTime, setFormattedTime] = useState(formatRelativeTime(message.timestamp));
+  
+  useEffect(() => {
+    // Update the formatted time immediately
+    setFormattedTime(formatRelativeTime(message.timestamp));
+    
+    // Set up an interval to update the time every minute
+    const interval = setInterval(() => {
+      setFormattedTime(formatRelativeTime(message.timestamp));
+    }, 60000); // 60000 ms = 1 minute
+    
+    // Clean up the interval when the component unmounts
+    return () => clearInterval(interval);
+  }, [message.timestamp]);
   
   const copyToClipboard = () => {
     navigator.clipboard.writeText(message.content);
@@ -59,59 +74,74 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   };
   
   return (
-    <div className={`message ${isUser ? 'user-message' : 'ai-message'}`}>
-      <div className={`message__body ${isUser ? 'border-tertiary-500' : 'border-primary-500'}`}>
-        {isThinking ? (
-          <div className="flex items-center space-x-2">
-            <div className="typing-indicator">
-              <span></span>
-              <span></span>
-              <span></span>
+    <div className={`message ${isUser ? 'user-message' : 'ai-message'} flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className="message__body max-w-[80%] flex flex-col">
+        <div className="flex-1">
+          {isThinking ? (
+            <div className="flex items-center space-x-2">
+              <div className="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <span>Thinking...</span>
             </div>
-            <span>Thinking...</span>
-          </div>
-        ) : isGenerating ? (
-          <div className="markdown-content relative">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={components}
-            >
-              {message.content}
-            </ReactMarkdown>
-            <div className="typing-indicator absolute bottom-0 right-0">
-              <span></span>
-              <span></span>
-              <span></span>
+          ) : isGenerating ? (
+            <div className="markdown-content relative">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={components}
+              >
+                {message.content}
+              </ReactMarkdown>
+              <div className="typing-indicator absolute bottom-0 right-0">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="markdown-content">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={components}
-            >
-              {message.content}
-            </ReactMarkdown>
-          </div>
-        )}
-      </div>
-      <div className="message__footer">
-        <span className="message__authoring">
-          {isUser ? 'You' : 'AI Assistant'}
-        </span>
-        {' - '}{formatRelativeTime(message.timestamp)}
+          ) : (
+            <div className="markdown-content">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={components}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          )}
+        </div>
         
-        {!isUser && !isThinking && !isGenerating && message.content && (
-          <button 
-            className="ml-2 text-secondary-500 hover:text-secondary-400 transition-colors"
-            onClick={copyToClipboard}
-            title="Copy message"
-          >
-            {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
-          </button>
-        )}
+        <div className="message__footer flex items-center justify-between mt-2 pt-2 border-t border-primary-600">
+          <div className="flex items-center">
+            <span className="message__authoring">
+              {isUser ? 'You' : 'AI Assistant'}
+            </span>
+            <span className="mx-2">-</span>
+            <span>{formattedTime}</span>
+          </div>
+          
+          {!isUser && !isThinking && !isGenerating && message.content && (
+            <div className="flex items-center space-x-2">
+              <button 
+                className="text-secondary-500 hover:text-secondary-400 transition-colors"
+                onClick={copyToClipboard}
+                title="Copy message"
+              >
+                {copied ? <CheckCircle size={14} /> : <Copy size={14} />}
+              </button>
+              <button
+                className="text-secondary-500 hover:text-secondary-400 transition-colors"
+                onClick={onRegenerate}
+                title="Regenerate response"
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

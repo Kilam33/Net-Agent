@@ -6,12 +6,14 @@ import type { Message } from '../../types';
 interface ChatInterfaceProps {
   messages: Message[];
   onSendMessage: (content: string) => void;
+  onRegenerate?: (messageId: string) => void;
   isLoading: boolean;
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   messages,
   onSendMessage,
+  onRegenerate,
   isLoading
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -49,7 +51,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </div>
           </div>
         ) : (
-          <MessageList messages={messages} />
+          <MessageList messages={messages} onRegenerate={onRegenerate} />
         )}
         <div ref={messagesEndRef} />
       </div>
