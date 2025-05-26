@@ -1,0 +1,15 @@
+{
+  "apiKey": "",
+  "debugMode": false,
+  "maxTokens": 1000,
+  "model": "deepseek/deepseek-r1:free",
+  "securityLevel": "medium",
+  "streamingEnabled": true,
+  "temperature": 0.7,
+  "tools": {
+    "codeAnalysis": true,
+    "dataOperations": true,
+    "networkMonitor": true,
+    "securityScanner": true
+  }
+}

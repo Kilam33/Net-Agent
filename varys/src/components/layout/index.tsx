@@ -3,6 +3,7 @@ import { Navbar } from './Navbar';
 import { Sidebar } from './Sidebar';
 import { Footer } from './Footer';
 import { Outlet } from 'react-router-dom';
+import { DebugPanel } from '../Debug/DebugPanel';
 
 export const Layout: React.FC = () => {
   return (
@@ -15,6 +16,7 @@ export const Layout: React.FC = () => {
         </main>
       </div>
       <Footer />
+      <DebugPanel />
     </div>
   );
 };

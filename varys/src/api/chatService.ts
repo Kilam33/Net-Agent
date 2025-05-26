@@ -1,4 +1,4 @@
-import type { Message, MessageStatus } from '../types/index.js';
+import type { Message, MessageStatus, Settings, SettingsResponse } from '../types/index.js';
 
 const API_URL = 'http://localhost:8000';
 
@@ -17,6 +17,111 @@ interface Capabilities {
   tools: string[];
   model: string;
 }
+
+// Debug API methods
+export const getDebugLogs = async (type?: string, token?: string): Promise<{
+  logs: any[];
+  metrics: any;
+}> => {
+  try {
+    if (!token) {
+      throw new Error('Debug token is required');
+    }
+
+    console.log('Fetching debug logs with token:', token); // Debug log
+
+    const response = await fetch(`${API_URL}/debug/logs${type ? `?type=${type}` : ''}`, {
+      headers: {
+        'X-Debug-Token': token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error('Debug logs response error:', {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorData
+      });
+      
+      if (response.status === 401) {
+        throw new Error('Invalid or expired debug token');
+      }
+      throw new Error(`Failed to fetch debug logs: ${errorData.error || response.statusText}`);
+    }
+
+    const data = await response.json();
+    return {
+      logs: data.logs || [],
+      metrics: data.metrics || {}
+    };
+  } catch (error) {
+    console.error('Error fetching debug logs:', error);
+    throw error;
+  }
+};
+
+export const clearDebugLogs = async (token?: string): Promise<{
+  success: boolean;
+  message?: string;
+}> => {
+  try {
+    if (!token) {
+      throw new Error('Debug token is required');
+    }
+
+    const response = await fetch(`${API_URL}/debug/logs`, {
+      method: 'DELETE',
+      headers: {
+        'X-Debug-Token': token
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Invalid or expired debug token');
+      }
+      throw new Error('Failed to clear debug logs');
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error clearing debug logs:', error);
+    throw error;
+  }
+};
+
+export const getDebugMetrics = async (token?: string): Promise<{
+  metrics: any;
+}> => {
+  try {
+    if (!token) {
+      throw new Error('Debug token is required');
+    }
+
+    const response = await fetch(`${API_URL}/debug/metrics`, {
+      headers: {
+        'X-Debug-Token': token
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Invalid or expired debug token');
+      }
+      throw new Error('Failed to fetch debug metrics');
+    }
+
+    const data = await response.json();
+    return {
+      metrics: data.metrics || {}
+    };
+  } catch (error) {
+    console.error('Error fetching debug metrics:', error);
+    throw error;
+  }
+};
 
 export const chatService = {
   /**
@@ -47,22 +152,26 @@ export const chatService = {
    * Send a message to the chat API with streaming response
    */
   sendMessageStream: (message: string, onChunk: (chunk: string) => void, onComplete: () => void, onError?: (error: Error) => void) => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     fetch(`${API_URL}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ message, stream: true }),
+      signal,
     }).then(response => {
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
       
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
+      if (!response.body) {
+        throw new Error('No response body available');
       }
-
+      
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
@@ -95,8 +204,6 @@ export const chatService = {
       }
 
       function readChunk() {
-        if (!reader) return;
-        
         reader.read().then(({ done, value }) => {
           if (done) {
             onComplete();
@@ -106,6 +213,7 @@ export const chatService = {
           processChunk(chunk);
           readChunk();
         }).catch(error => {
+          if (error.name === 'AbortError') return;
           console.error('Error reading stream:', error);
           onError?.(error);
         });
@@ -113,18 +221,16 @@ export const chatService = {
 
       readChunk();
     }).catch(error => {
+      if (error.name === 'AbortError') return;
       console.error('Streaming error:', error);
       onError?.(error);
     });
     
-    return () => {
-      // Cleanup function - could be used to abort the request if needed
-    };
+    return () => controller.abort();
   },
   
   /**
    * Regenerate the last assistant response (non-streaming)
-   * Note: messageId parameter is kept for API compatibility but not used by backend
    */
   regenerateMessage: async (messageId?: string): Promise<ChatResponse> => {
     try {
@@ -133,7 +239,7 @@ export const chatService = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({}), // Empty body since backend doesn't use messageId
+        body: JSON.stringify({}),
       });
       
       if (!response.ok) {
@@ -149,25 +255,28 @@ export const chatService = {
 
   /**
    * Regenerate the last assistant response with streaming
-   * Note: messageId parameter is kept for API compatibility but not used by backend
    */
   regenerateMessageStream: (messageId: string | undefined, onChunk: (chunk: string) => void, onComplete: () => void, onError?: (error: Error) => void) => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     fetch(`${API_URL}/chat/regenerate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ stream: true }), // Only send stream flag, no messageId needed
+      body: JSON.stringify({ stream: true }),
+      signal,
     }).then(response => {
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
       
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
+      if (!response.body) {
+        throw new Error('No response body available');
       }
-
+      
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
@@ -200,8 +309,6 @@ export const chatService = {
       }
 
       function readChunk() {
-        if (!reader) return;
-        
         reader.read().then(({ done, value }) => {
           if (done) {
             onComplete();
@@ -211,6 +318,7 @@ export const chatService = {
           processChunk(chunk);
           readChunk();
         }).catch(error => {
+          if (error.name === 'AbortError') return;
           console.error('Error reading stream:', error);
           onError?.(error);
         });
@@ -218,13 +326,12 @@ export const chatService = {
 
       readChunk();
     }).catch(error => {
+      if (error.name === 'AbortError') return;
       console.error('Error regenerating message:', error);
       onError?.(error);
     });
     
-    return () => {
-      // Cleanup function
-    };
+    return () => controller.abort();
   },
   
   /**
@@ -278,6 +385,9 @@ export const chatService = {
     onComplete: () => void,
     onError?: (error: Error) => void
   ) => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('stream', 'true');
@@ -285,16 +395,17 @@ export const chatService = {
     fetch(`${API_URL}/upload`, {
       method: 'POST',
       body: formData,
+      signal,
     }).then(response => {
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
       
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
+      if (!response.body) {
+        throw new Error('No response body available');
       }
-
+      
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
 
@@ -327,8 +438,6 @@ export const chatService = {
       }
 
       function readChunk() {
-        if (!reader) return;
-        
         reader.read().then(({ done, value }) => {
           if (done) {
             onComplete();
@@ -338,6 +447,7 @@ export const chatService = {
           processChunk(chunk);
           readChunk();
         }).catch(error => {
+          if (error.name === 'AbortError') return;
           console.error('Error reading stream:', error);
           onError?.(error);
         });
@@ -345,12 +455,73 @@ export const chatService = {
 
       readChunk();
     }).catch(error => {
+      if (error.name === 'AbortError') return;
       console.error('Streaming error:', error);
       onError?.(error);
     });
     
-    return () => {
-      // Cleanup function
-    };
-  }
-};
+    return () => controller.abort();
+  },
+
+  /**
+   * Get current settings
+   */
+  getSettings: async (): Promise<SettingsResponse> => {
+    try {
+      const response = await fetch(`${API_URL}/settings`);
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching settings:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Update settings
+   */
+  updateSettings: async (settings: Settings): Promise<SettingsResponse> => {
+    try {
+      const response = await fetch(`${API_URL}/settings`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ settings }),
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('Error updating settings:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Reset settings to defaults
+   */
+  resetSettings: async (): Promise<SettingsResponse> => {
+    try {
+      const response = await fetch(`${API_URL}/settings/reset`, {
+        method: 'POST',
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('Error resetting settings:', error);
+      throw error;
+    }
+  },
+}; 

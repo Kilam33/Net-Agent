@@ -1,39 +1,111 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Save, RefreshCw, Shield, Terminal, Database, Workflow, Key } from 'lucide-react';
+import { useSettings } from '../../contexts/SettingsContext';
+import type { Settings } from '../../types';
 
-export const Settings: React.FC = () => {
-  const [settings, setSettings] = useState({
-    model: 'deepseek/deepseek-r1:free',
-    temperature: 0.7,
-    maxTokens: 1000,
-    streamingEnabled: true,
-    securityLevel: 'high',
-    debugMode: false,
-    apiKey: '',
-    tools: {
-      securityScanner: true,
-      codeAnalysis: true,
-      dataOperations: true,
-      networkMonitor: false
+export const SettingsPage: React.FC = () => {
+  const { settings, loading, error, updateSettings, resetSettings } = useSettings();
+  const [localSettings, setLocalSettings] = useState<Settings | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Initialize local settings when context settings load
+  useEffect(() => {
+    if (settings) {
+      setLocalSettings(settings);
     }
-  });
+  }, [settings]);
 
-  const handleSettingChange = (key: string, value: any) => {
-    setSettings(prev => ({
-      ...prev,
-      [key]: value
-    }));
+  const handleSettingChange = (key: keyof Settings, value: any) => {
+    if (!localSettings) return;
+    
+    setLocalSettings(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        [key]: value
+      };
+    });
   };
 
-  const handleToolToggle = (tool: string) => {
-    setSettings(prev => ({
-      ...prev,
-      tools: {
-        ...prev.tools,
-        [tool]: !prev.tools[tool as keyof typeof prev.tools]
-      }
-    }));
+  const handleToolToggle = (tool: keyof Settings['tools']) => {
+    if (!localSettings) return;
+    
+    setLocalSettings(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        tools: {
+          ...prev.tools,
+          [tool]: !prev.tools[tool]
+        }
+      };
+    });
   };
+
+  const handleSave = async () => {
+    if (!localSettings) return;
+    
+    try {
+      setIsSaving(true);
+      setSaveError(null);
+      await updateSettings(localSettings);
+    } catch (err) {
+      setSaveError('Failed to save settings');
+      console.error('Error saving settings:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    try {
+      setIsSaving(true);
+      setSaveError(null);
+      await resetSettings();
+    } catch (err) {
+      setSaveError('Failed to reset settings');
+      console.error('Error resetting settings:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="app-skeleton">
+        <div className="segment-topbar">
+          <div className="segment-topbar__header mb-1">
+            <div className="segment-topbar__overline text-overline">System Configuration</div>
+            <h1 className="segment-topbar__title text-heading1">Settings</h1>
+          </div>
+        </div>
+        <div className="pad mt-5">
+          <div className="pad__body">
+            <p className="text-primary-500">Loading settings...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !localSettings) {
+    return (
+      <div className="app-skeleton">
+        <div className="segment-topbar">
+          <div className="segment-topbar__header mb-1">
+            <div className="segment-topbar__overline text-overline">System Configuration</div>
+            <h1 className="segment-topbar__title text-heading1">Settings</h1>
+          </div>
+        </div>
+        <div className="pad mt-5">
+          <div className="pad__body">
+            <p className="text-red-500">Error: {error || 'Failed to load settings'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-skeleton">
@@ -45,6 +117,14 @@ export const Settings: React.FC = () => {
         <div className="segment-topbar__aside">
         </div>
       </div>
+
+      {saveError && (
+        <div className="pad mt-5">
+          <div className="pad__body">
+            <p className="text-red-500">{saveError}</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-6">
         {/* Model Configuration Section */}
@@ -58,7 +138,7 @@ export const Settings: React.FC = () => {
                 <select 
                   id="model"
                   className="w-full bg-transparent border-0 text-primary-500 cyberpunk-select"
-                  value={settings.model}
+                  value={localSettings.model}
                   onChange={(e) => handleSettingChange('model', e.target.value)}
                 >
                   <option value="deepseek/deepseek-r1:free">Deepseek-r1</option>
@@ -69,7 +149,7 @@ export const Settings: React.FC = () => {
             </div>
 
             <div className="form-group mb-4">
-              <label className="form-label" htmlFor="temperature">Temperature: {settings.temperature}</label>
+              <label className="form-label" htmlFor="temperature">Temperature: {localSettings.temperature}</label>
               <div className="form-control">
                 <input 
                   type="range"
@@ -77,7 +157,7 @@ export const Settings: React.FC = () => {
                   min="0"
                   max="1"
                   step="0.1"
-                  value={settings.temperature}
+                  value={localSettings.temperature}
                   onChange={(e) => handleSettingChange('temperature', parseFloat(e.target.value))}
                   className="w-full"
                 />
@@ -90,7 +170,7 @@ export const Settings: React.FC = () => {
                 <input 
                   type="number"
                   id="maxTokens"
-                  value={settings.maxTokens}
+                  value={localSettings.maxTokens}
                   onChange={(e) => handleSettingChange('maxTokens', parseInt(e.target.value))}
                   className="w-full"
                 />
@@ -104,7 +184,7 @@ export const Settings: React.FC = () => {
                   <input 
                     type="password"
                     id="apiKey"
-                    value={settings.apiKey}
+                    value={localSettings.apiKey}
                     onChange={(e) => handleSettingChange('apiKey', e.target.value)}
                     className="w-full bg-transparent border-0 text-primary-500 pr-10"
                     placeholder="Enter your OpenRouter API key"
@@ -118,7 +198,7 @@ export const Settings: React.FC = () => {
               <input 
                 type="checkbox"
                 id="streamingEnabled"
-                checked={settings.streamingEnabled}
+                checked={localSettings.streamingEnabled}
                 onChange={(e) => handleSettingChange('streamingEnabled', e.target.checked)}
                 className="form-checkbox"
               />
@@ -138,7 +218,7 @@ export const Settings: React.FC = () => {
                 <select 
                   id="securityLevel"
                   className="w-full bg-transparent border-0 text-primary-500 cyberpunk-select"
-                  value={settings.securityLevel}
+                  value={localSettings.securityLevel}
                   onChange={(e) => handleSettingChange('securityLevel', e.target.value)}
                 >
                   <option value="low">Low</option>
@@ -161,7 +241,7 @@ export const Settings: React.FC = () => {
                       </div>
                       <input 
                         type="checkbox"
-                        checked={settings.tools.securityScanner}
+                        checked={localSettings.tools.securityScanner}
                         onChange={() => handleToolToggle('securityScanner')}
                         className="form-checkbox"
                       />
@@ -178,7 +258,7 @@ export const Settings: React.FC = () => {
                       </div>
                       <input 
                         type="checkbox"
-                        checked={settings.tools.codeAnalysis}
+                        checked={localSettings.tools.codeAnalysis}
                         onChange={() => handleToolToggle('codeAnalysis')}
                         className="form-checkbox"
                       />
@@ -195,7 +275,7 @@ export const Settings: React.FC = () => {
                       </div>
                       <input 
                         type="checkbox"
-                        checked={settings.tools.dataOperations}
+                        checked={localSettings.tools.dataOperations}
                         onChange={() => handleToolToggle('dataOperations')}
                         className="form-checkbox"
                       />
@@ -212,7 +292,7 @@ export const Settings: React.FC = () => {
                       </div>
                       <input 
                         type="checkbox"
-                        checked={settings.tools.networkMonitor}
+                        checked={localSettings.tools.networkMonitor}
                         onChange={() => handleToolToggle('networkMonitor')}
                         className="form-checkbox"
                       />
@@ -226,7 +306,7 @@ export const Settings: React.FC = () => {
               <input 
                 type="checkbox"
                 id="debugMode"
-                checked={settings.debugMode}
+                checked={localSettings.debugMode}
                 onChange={(e) => handleSettingChange('debugMode', e.target.checked)}
                 className="form-checkbox"
               />
@@ -237,7 +317,11 @@ export const Settings: React.FC = () => {
       </div>
 
       <div className="flex justify-end gap-4 mt-6">
-        <button className="glowbutton3 glowbutton3--size-l group">
+        <button 
+          className="glowbutton3 glowbutton3--size-l group"
+          onClick={handleReset}
+          disabled={isSaving}
+        >
           <span className="button__content text-primary-500">
             <RefreshCw className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
             Reset
@@ -249,15 +333,19 @@ export const Settings: React.FC = () => {
             </span>
           </span>
         </button>
-        <button className="glowbutton3 glowbutton3--size-l group">
+        <button 
+          className="glowbutton3 glowbutton3--size-l group"
+          onClick={handleSave}
+          disabled={isSaving}
+        >
           <span className="button__content text-primary-500">
             <Save className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
-            Save Settings
+            {isSaving ? 'Saving...' : 'Save Settings'}
           </span>
           <span className="glowbutton3__glitch">
             <span className="button__content text-primary-500">
               <Save className="button__icon text-blue-500 group-hover:text-red-500 transition-colors" />
-              Save Settings
+              {isSaving ? 'Saving...' : 'Save Settings'}
             </span>
           </span>
         </button>

@@ -29,3 +29,25 @@ export interface ApiCapabilities {
   tools: string[];
   model: string;
 }
+
+export interface Settings {
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  streamingEnabled: boolean;
+  securityLevel: 'low' | 'medium' | 'high';
+  debugMode: boolean;
+  apiKey: string;
+  tools: {
+    securityScanner: boolean;
+    codeAnalysis: boolean;
+    dataOperations: boolean;
+    networkMonitor: boolean;
+  };
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+  success: boolean;
+  message?: string;
+}

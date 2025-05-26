@@ -21,6 +21,14 @@ import markdownify  # pip install markdownify
 from xml.etree import ElementTree as ET
 import tiktoken  # Add tiktoken for token counting
 from werkzeug.utils import secure_filename
+import psutil
+import threading
+from collections import deque
+import uuid
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import hashlib
+import secrets
 
 # Configure logging
 logging.basicConfig(
@@ -48,8 +56,289 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'md'}
 # Create uploads directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Add settings file path
+SETTINGS_FILE = 'settings.json'
+
+# Initialize rate limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
+# Add debug token management
+class DebugTokenManager:
+    def __init__(self):
+        self.tokens = {}
+        self.token_expiry = 3600  # 1 hour expiry
+    
+    def generate_token(self, client_id: str) -> str:
+        """Generate a new debug token for a client."""
+        token = secrets.token_urlsafe(32)
+        self.tokens[token] = {
+            'client_id': client_id,
+            'created_at': time.time(),
+            'expires_at': time.time() + self.token_expiry
+        }
+        return token
+    
+    def validate_token(self, token: str) -> bool:
+        """Validate a debug token."""
+        if token not in self.tokens:
+            return False
+        
+        token_data = self.tokens[token]
+        if time.time() > token_data['expires_at']:
+            del self.tokens[token]
+            return False
+        
+        return True
+    
+    def cleanup_expired_tokens(self):
+        """Remove expired tokens."""
+        current_time = time.time()
+        expired_tokens = [
+            token for token, data in self.tokens.items()
+            if current_time > data['expires_at']
+        ]
+        for token in expired_tokens:
+            del self.tokens[token]
+
+# Initialize token manager
+debug_token_manager = DebugTokenManager()
+
+# Debug data structures
+class DebugLog:
+    def __init__(self, max_size=1000):
+        self.logs = deque(maxlen=max_size)
+        self.session_id = str(uuid.uuid4())
+        self.start_time = time.time()
+        self.metrics = {
+            'total_requests': 0,
+            'total_tokens': 0,
+            'total_errors': 0,
+            'avg_response_time': 0
+        }
+    
+    def add_log(self, log_type: str, data: Dict[str, Any]):
+        """Add a log entry with timestamp and session info."""
+        log_entry = {
+            'timestamp': datetime.datetime.now().isoformat(),
+            'type': log_type,
+            'data': data,
+            'session_id': self.session_id
+        }
+        self.logs.append(log_entry)
+        return log_entry
+    
+    def get_logs(self, log_type: Optional[str] = None, limit: int = 100):
+        """Get logs, optionally filtered by type."""
+        if log_type:
+            return [log for log in self.logs if log['type'] == log_type][-limit:]
+        return list(self.logs)[-limit:]
+    
+    def clear_logs(self):
+        """Clear all logs."""
+        self.logs.clear()
+    
+    def get_metrics(self):
+        """Get current debug metrics."""
+        return self.metrics
+
+# Initialize debug log
+debug_log = DebugLog()
+
+def debug_middleware():
+    """Middleware to handle debug logging."""
+    if not current_settings.get('debugMode', False):
+        return
+    
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    
+    # Log request
+    debug_log.add_log('request', {
+        'id': request_id,
+        'method': request.method,
+        'path': request.path,
+        'headers': dict(request.headers),
+        'body': request.get_json(silent=True)
+    })
+    
+    # Track system metrics
+    system_metrics = {
+        'cpu_percent': psutil.cpu_percent(),
+        'memory_percent': psutil.virtual_memory().percent,
+        'disk_usage': psutil.disk_usage('/').percent
+    }
+    debug_log.add_log('system_metrics', system_metrics)
+    
+    return request_id, start_time
+
+def debug_response(request_id: str, start_time: float, response: Response):
+    """Log response data and update metrics."""
+    if not current_settings.get('debugMode', False):
+        return response
+    
+    # Calculate response time
+    response_time = time.time() - start_time
+    
+    # Log response
+    debug_log.add_log('response', {
+        'id': request_id,
+        'status_code': response.status_code,
+        'headers': dict(response.headers),
+        'response_time': response_time
+    })
+    
+    # Update metrics
+    debug_log.metrics['total_requests'] += 1
+    debug_log.metrics['avg_response_time'] = (
+        (debug_log.metrics['avg_response_time'] * (debug_log.metrics['total_requests'] - 1) + response_time)
+        / debug_log.metrics['total_requests']
+    )
+    
+    return response
+
+# Add debug token generation endpoint
+@app.route('/debug/token', methods=['POST'])
+@limiter.limit("5 per minute")
+def generate_debug_token():
+    """Generate a debug token for authenticated clients."""
+    try:
+        # Verify debug mode is enabled
+        if not current_settings.get('debugMode', False):
+            return jsonify({'error': 'Debug mode is disabled'}), 403
+        
+        # Get client identifier (IP + User Agent)
+        client_id = f"{request.remote_addr}-{request.headers.get('User-Agent', '')}"
+        client_hash = hashlib.sha256(client_id.encode()).hexdigest()
+        
+        # Generate token
+        token = debug_token_manager.generate_token(client_hash)
+        
+        return jsonify({
+            'token': token,
+            'expires_in': debug_token_manager.token_expiry
+        })
+    except Exception as e:
+        logger.error(f"Error generating debug token: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Modify debug endpoints to require token
+@app.route('/debug/logs', methods=['GET'])
+@limiter.limit("30 per minute")
+def get_debug_logs():
+    """Get debug logs."""
+    try:
+        # Verify debug mode and token
+        if not current_settings.get('debugMode', False):
+            return jsonify({'error': 'Debug mode is disabled'}), 403
+        
+        token = request.headers.get('X-Debug-Token')
+        if not token or not debug_token_manager.validate_token(token):
+            return jsonify({'error': 'Invalid or expired debug token'}), 401
+        
+        log_type = request.args.get('type')
+        limit = int(request.args.get('limit', 100))
+        
+        return jsonify({
+            'logs': debug_log.get_logs(log_type, limit),
+            'metrics': debug_log.get_metrics()
+        })
+    except Exception as e:
+        logger.error(f"Error getting debug logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/debug/logs', methods=['DELETE'])
+@limiter.limit("10 per minute")
+def clear_debug_logs():
+    """Clear debug logs."""
+    try:
+        # Verify debug mode and token
+        if not current_settings.get('debugMode', False):
+            return jsonify({'error': 'Debug mode is disabled'}), 403
+        
+        token = request.headers.get('X-Debug-Token')
+        if not token or not debug_token_manager.validate_token(token):
+            return jsonify({'error': 'Invalid or expired debug token'}), 401
+        
+        debug_log.clear_logs()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error clearing debug logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/debug/metrics', methods=['GET'])
+@limiter.limit("30 per minute")
+def get_debug_metrics():
+    """Get debug metrics."""
+    try:
+        # Verify debug mode and token
+        if not current_settings.get('debugMode', False):
+            return jsonify({'error': 'Debug mode is disabled'}), 403
+        
+        token = request.headers.get('X-Debug-Token')
+        if not token or not debug_token_manager.validate_token(token):
+            return jsonify({'error': 'Invalid or expired debug token'}), 401
+        
+        return jsonify(debug_log.get_metrics())
+    except Exception as e:
+        logger.error(f"Error getting debug metrics: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# Add periodic token cleanup
+def cleanup_tokens():
+    """Periodically clean up expired tokens."""
+    while True:
+        debug_token_manager.cleanup_expired_tokens()
+        time.sleep(300)  # Run every 5 minutes
+
+# Start token cleanup thread
+token_cleanup_thread = threading.Thread(target=cleanup_tokens, daemon=True)
+token_cleanup_thread.start()
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def load_settings():
+    """Load settings from file or return defaults."""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
+    
+    # Default settings
+    return {
+        "model": "deepseek/deepseek-r1:free",
+        "temperature": 0.7,
+        "maxTokens": 1000,
+        "streamingEnabled": True,
+        "securityLevel": "high",
+        "debugMode": False,
+        "apiKey": "",
+        "tools": {
+            "securityScanner": True,
+            "codeAnalysis": True,
+            "dataOperations": True,
+            "networkMonitor": False
+        }
+    }
+
+def save_settings(settings):
+    """Save settings to file."""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving settings: {e}")
+        return False
+
+# Initialize settings
+current_settings = load_settings()
 
 class OpenRouterLLM:
     def __init__(self, api_key: Optional[str] = None, 
@@ -136,6 +425,38 @@ class OpenRouterLLM:
             return min(requested_max, available_tokens)
         return min(DEFAULT_MAX_TOKENS, available_tokens)
     
+    def _handle_streaming_response(self, messages: List[Dict[str, str]], temperature: float, max_tokens: int):
+        """Handle streaming response from OpenRouter API using OpenAI client."""
+        def generate_chunks():
+            try:
+                stream = self.client.chat.completions.create(
+                    extra_headers=self.extra_headers,
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+                
+                for chunk in stream:
+                    if chunk.choices[0].delta.content is not None:
+                        yield chunk.choices[0].delta.content
+                        
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Error in streaming response: {error_msg}")
+                if current_settings.get('debugMode', False):
+                    debug_log.metrics['total_errors'] += 1
+                    debug_log.add_log('error', {
+                        'error': error_msg,
+                        'type': 'llm_streaming_error',
+                        'model': self.model,
+                        'timestamp': datetime.datetime.now().isoformat()
+                    })
+                yield f" [Error: {error_msg}]"
+        
+        return generate_chunks()
+    
     def generate(self, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 100000, stream: bool = False):
         """Generate a response using the LLM.
         
@@ -173,36 +494,22 @@ class OpenRouterLLM:
                 return completion.choices[0].message.content
                 
         except Exception as e:
-            logger.error(f"Error calling OpenRouter API: {e}")
+            error_msg = str(e)
+            logger.error(f"Error calling OpenRouter API: {error_msg}")
+            if current_settings.get('debugMode', False):
+                debug_log.metrics['total_errors'] += 1
+                debug_log.add_log('error', {
+                    'error': error_msg,
+                    'type': 'llm_api_error',
+                    'model': self.model,
+                    'timestamp': datetime.datetime.now().isoformat()
+                })
             if stream:
                 def error_generator():
-                    yield f"Error generating response: {str(e)}"
+                    yield f"Error generating response: {error_msg}"
                 return error_generator()
             else:
-                return f"Error generating response: {str(e)}"
-    
-    def _handle_streaming_response(self, messages: List[Dict[str, str]], temperature: float, max_tokens: int):
-        """Handle streaming response from OpenRouter API using OpenAI client."""
-        def generate_chunks():
-            try:
-                stream = self.client.chat.completions.create(
-                    extra_headers=self.extra_headers,
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True
-                )
-                
-                for chunk in stream:
-                    if chunk.choices[0].delta.content is not None:
-                        yield chunk.choices[0].delta.content
-                        
-            except Exception as e:
-                logger.error(f"Error in streaming response: {e}")
-                yield f" [Error: {str(e)}]"
-        
-        return generate_chunks()
+                return f"Error generating response: {error_msg}"
 
 
 class Tool:
@@ -741,7 +1048,10 @@ api_key = os.environ.get("OPENROUTER_API_KEY")
 if not api_key:
     raise ValueError("Please set the OPENROUTER_API_KEY environment variable")
 
-llm = OpenRouterLLM(api_key=api_key)
+llm = OpenRouterLLM(
+    api_key=current_settings.get('apiKey') or os.environ.get("OPENROUTER_API_KEY"),
+    model=current_settings.get('model', "deepseek/deepseek-r1:free")
+)
 agent = Agent(llm=llm)
 
 # Add some initial knowledge
@@ -759,6 +1069,9 @@ agent.rag.add_documents([
 def chat():
     """Handle chat messages from the frontend with optional streaming."""
     try:
+        # Debug middleware
+        request_id, start_time = debug_middleware()
+        
         data = request.json
         if not data or 'message' not in data:
             return jsonify({'error': 'No message provided'}), 400
@@ -767,33 +1080,58 @@ def chat():
         should_stream = data.get('stream', False)
         logger.info(f"Received message: {message}, streaming: {should_stream}")
         
+        # Log token usage
+        if current_settings.get('debugMode', False):
+            try:
+                encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+                tokens = len(encoding.encode(message))
+                debug_log.metrics['total_tokens'] += tokens
+                debug_log.add_log('token_usage', {
+                    'request_id': request_id,
+                    'tokens': tokens,
+                    'total_tokens': debug_log.metrics['total_tokens']
+                })
+            except Exception as e:
+                logger.error(f"Error counting tokens: {e}")
+        
         if should_stream:
             def generate_stream():
                 try:
-                    response_chunks = []  # Collect chunks for potential tool processing
+                    response_chunks = []
                     
                     for chunk in agent.process_message_stream(message):
-                        if chunk:  # Only send non-empty chunks
+                        if chunk:
                             response_chunks.append(chunk)
                             chunk_data = {'content': chunk}
                             sse_data = f"data: {json.dumps(chunk_data)}\n\n"
                             logger.debug(f"Sending SSE chunk: {repr(chunk)}")
                             yield sse_data
                     
-                    # Send completion signal
-                    logger.debug("Sending [DONE] signal")
+                    # Log successful completion
+                    if current_settings.get('debugMode', False):
+                        debug_log.add_log('stream_complete', {
+                            'request_id': request_id,
+                            'chunks': len(response_chunks)
+                        })
+                    
                     yield "data: [DONE]\n\n"
                     
                 except Exception as e:
                     logger.error(f"Error in streaming: {e}")
+                    if current_settings.get('debugMode', False):
+                        debug_log.metrics['total_errors'] += 1
+                        debug_log.add_log('error', {
+                            'request_id': request_id,
+                            'error': str(e),
+                            'type': 'streaming_error'
+                        })
                     error_data = {'error': str(e)}
                     yield f"data: {json.dumps(error_data)}\n\n"
-                    yield "data: [DONE]\n\n"  # Always send done signal
+                    yield "data: [DONE]\n\n"
                 finally:
-                    # Ensure proper cleanup
                     logger.debug("Streaming completed")
             
-            return Response(
+            response = Response(
                 generate_stream(),
                 content_type='text/event-stream',
                 headers={
@@ -801,18 +1139,34 @@ def chat():
                     'Connection': 'keep-alive',
                     'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Headers': 'Content-Type',
-                    'X-Accel-Buffering': 'no'  # Disable proxy buffering
+                    'X-Accel-Buffering': 'no'
                 }
             )
+            return debug_response(request_id, start_time, response)
         else:
-            # Non-streaming response (existing behavior)
+            # Non-streaming response
             response = agent.process_message(message)
             logger.info(f"Agent response: {response}")
-            return jsonify({'response': response})
+            
+            # Log successful completion
+            if current_settings.get('debugMode', False):
+                debug_log.add_log('response_complete', {
+                    'request_id': request_id,
+                    'response_length': len(response)
+                })
+            
+            return debug_response(request_id, start_time, jsonify({'response': response}))
             
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        if current_settings.get('debugMode', False):
+            debug_log.metrics['total_errors'] += 1
+            debug_log.add_log('error', {
+                'request_id': request_id,
+                'error': str(e),
+                'type': 'processing_error'
+            })
+        return debug_response(request_id, start_time, jsonify({'error': str(e)}), 500)
 
 @app.route('/chat/regenerate', methods=['POST'])
 def regenerate():
@@ -870,11 +1224,20 @@ def regenerate():
 
 @app.route('/capabilities', methods=['GET'])
 def capabilities():
-    """Return API capabilities including streaming support."""
+    """Return API capabilities including streaming support and settings."""
     return jsonify({
         'streaming': True,
         'tools': list(agent.tools.keys()),
-        'model': agent.llm.model
+        'model': agent.llm.model,
+        'settings': {
+            'model': current_settings['model'],
+            'temperature': current_settings['temperature'],
+            'maxTokens': current_settings['maxTokens'],
+            'streamingEnabled': current_settings['streamingEnabled'],
+            'securityLevel': current_settings['securityLevel'],
+            'debugMode': current_settings['debugMode'],
+            'tools': current_settings['tools']
+        }
     })
 
 @app.route('/upload', methods=['POST'])
@@ -958,6 +1321,117 @@ def upload_file():
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/settings', methods=['GET'])
+def get_settings():
+    """Get current settings."""
+    try:
+        return jsonify({
+            'settings': current_settings,
+            'success': True
+        })
+    except Exception as e:
+        logger.error(f"Error getting settings: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/settings', methods=['PUT'])
+def update_settings():
+    """Update settings."""
+    try:
+        data = request.json
+        if not data or 'settings' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'No settings provided'
+            }), 400
+        
+        new_settings = data['settings']
+        
+        # Validate settings
+        required_fields = ['model', 'temperature', 'maxTokens', 'streamingEnabled', 
+                         'securityLevel', 'debugMode', 'apiKey', 'tools']
+        for field in required_fields:
+            if field not in new_settings:
+                return jsonify({
+                    'success': False,
+                    'message': f'Missing required field: {field}'
+                }), 400
+        
+        # Validate tool fields
+        required_tools = ['securityScanner', 'codeAnalysis', 'dataOperations', 'networkMonitor']
+        for tool in required_tools:
+            if tool not in new_settings['tools']:
+                return jsonify({
+                    'success': False,
+                    'message': f'Missing required tool: {tool}'
+                }), 400
+        
+        # Update settings
+        global current_settings
+        current_settings = new_settings
+        
+        # Save to file
+        if not save_settings(new_settings):
+            return jsonify({
+                'success': False,
+                'message': 'Failed to save settings'
+            }), 500
+        
+        # Reinitialize agent with new settings
+        global llm, agent
+        llm = OpenRouterLLM(
+            api_key=new_settings.get('apiKey') or os.environ.get("OPENROUTER_API_KEY"),
+            model=new_settings.get('model', "deepseek/deepseek-r1:free")
+        )
+        agent = Agent(llm=llm)
+        
+        return jsonify({
+            'settings': current_settings,
+            'success': True
+        })
+    except Exception as e:
+        logger.error(f"Error updating settings: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/settings/reset', methods=['POST'])
+def reset_settings():
+    """Reset settings to defaults."""
+    try:
+        global current_settings, llm, agent
+        
+        # Load default settings
+        current_settings = load_settings()
+        
+        # Save to file
+        if not save_settings(current_settings):
+            return jsonify({
+                'success': False,
+                'message': 'Failed to save settings'
+            }), 500
+        
+        # Reinitialize agent with default settings
+        llm = OpenRouterLLM(
+            api_key=current_settings.get('apiKey') or os.environ.get("OPENROUTER_API_KEY"),
+            model=current_settings.get('model', "deepseek/deepseek-r1:free")
+        )
+        agent = Agent(llm=llm)
+        
+        return jsonify({
+            'settings': current_settings,
+            'success': True
+        })
+    except Exception as e:
+        logger.error(f"Error resetting settings: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
 
 if __name__ == "__main__":
     app.run(port=8000, debug=True)
